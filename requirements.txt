@@ -1,0 +1,4 @@
+cryptography>=42.0.0
+loguru>=0.7.0
+pyautogui>=0.9.54
+sympy>=1.12

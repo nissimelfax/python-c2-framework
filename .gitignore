@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+
+# Logs
+*.log
+
+# Local artifacts (captures, screenshots, chat logs) — not for the public repo
+_local/
+*.pcapng
