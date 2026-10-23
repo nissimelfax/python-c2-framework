@@ -278,7 +278,6 @@ def main():
     args = parse_args()
     BASE_URL = f"http://{args.host}:{args.port}/"
 
-
     t1 = threading.Thread(target= get_encryption_data, args=())
     t2 = threading.Thread(target= check_encryption_status, args=())
     t3= threading.Thread(target=command_handler , args=())

