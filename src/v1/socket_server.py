@@ -17,7 +17,7 @@ import pyautogui
 import encryptions
 #-----------------------------------------------------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description="Socket server (educational, lab use only)")
+    parser = argparse.ArgumentParser(description="Socket server - educational, lab use only")
     parser.add_argument("--port", type = int ,required=True, help="Port number for server")
     parser.add_argument("--host-ip", required=True, help="Host IP")
     return parser.parse_args()
