@@ -170,14 +170,13 @@ def ask_for_keys():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
         response = requests.get(f'{BASE_URL}getkeys',headers=custom_headers)
-
     except requests.exceptions.ConnectionError:
         logger.info("Connection Error")
         return "Connection Error"
     if response.status_code == 200:
         logger.info("Success!")
         logger.info(response.text)
-        return response.text
+        return response.json()
 
 
 def ask_for_commands():
@@ -222,22 +221,11 @@ def get_encryption_data():
         logger.info(f"encryption status is : {agent_data['is_encrypted']}")
         logger.info("ask for data")
         data = ask_for_keys()
-        logger.info(f"the specefic thing is {data}")
+        logger.info(f"the json response is {data}")
         time.sleep(1)
-        logger.info(str(data)[0])
-        if data and data !="empty":
-            #public key start at 1
-            if str(data)[0] == '1':
-                agent_data['public_key'] = str(data)[1:]
-                logger.info(f"public key recived  {agent_data['public_key']}")
-            # n start at 2
-            if str(data[0])=='2':
-                agent_data['N'] = str(data)[1:]
-                logger.info(f"N recived  {agent_data['N']}")
-        elif data =='empty':
-            logger.info("the client should know both N and public_key")
-            logger.info(f"public key is {agent_data['public_key']} and N is {agent_data['N']}")
-
+        if data:
+            agent_data['public_key'] = int(data["public_key"])
+            agent_data['N'] = int(data["N"])
 
 def check_encryption_status():
     while True:

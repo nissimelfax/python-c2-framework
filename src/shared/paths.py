@@ -13,3 +13,7 @@ SCREENSHOT = SCREENSHOT_DIR / "v2_my_screenshot.png"
 OUTPUT_IMG = SCREENSHOT_DIR / "v2_output_image.png"
 print(OUTPUT_IMG)
 print(SCREENSHOT)
+
+LOG_DIR = PROJECT_ROOT / "_local" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+SERVER_LOG = LOG_DIR / "C2_server.log"
