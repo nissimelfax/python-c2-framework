@@ -82,6 +82,33 @@ A few engineering choices that shaped the code:
 - **A typed JSON API.** Key material and tasking move between agent and server as named JSON fields (`public_key`, `N`, `iv`, `msg`) over HTTP, instead of positional or prefix-encoded payloads.
 - **Anchored paths, centralized logging.** File locations are computed relative to the file itself through one `paths` module, and logging is configured once at startup, so the project behaves the same from any working directory.
 
+
+# Known Limitations & Production Notes
+
+> This project is an educational / lab exercise. It is **not** hardened for
+> real-world use. The notes below document the current security properties
+> and how you would harden them in practice.
+
+**Payload-only encryption.**
+Encryption is applied to the message payload only. The protocol framing
+(the fixed-size length header and message markers) travels in cleartext, so
+an observer on the wire can see message boundaries, sizes, and timing even
+though the content itself is encrypted. Metadata is not protected.
+
+**No transport security.**
+The custom RSA/AES layer exists to demonstrate the cryptographic building
+blocks from scratch - not to replace a vetted transport. For any real
+deployment you would run the channel over TLS and treat the
+application-layer crypto as defense-in-depth, not the primary protection.
+
+**Confidentiality without integrity (no authentication).**
+AES-CBC provides confidentiality but not integrity: a message can be
+tampered with on the wire without detection, and CBC without a MAC is
+exposed to padding-oracle-style attacks. The correct fix is authenticated
+encryption - either Encrypt-then-MAC with HMAC-SHA256 over the ciphertext,
+or switching the cipher to AES-GCM. This is a known limitation and a
+planned improvement, not a design decision.
+
 ## How it fits together
 
 ```mermaid
@@ -141,6 +168,7 @@ v2, though a significant improvement over the basic v1, still needs work to meet
 - Add authenticated encryption (an HMAC over the ciphertext, or a move to AES-GCM) - AES-CBC today is not authenticated, so there is no protection against tampering with the encrypted data.
 - Move the dashboard to SSE-based push instead of polling, and add jitter to the agent's beacon intervals (instant updates + harder to detect).
 - Write unit tests for the encryption and protocol layers, which were built as pure, testable functions.
+
 
 ## Disclaimer
 
